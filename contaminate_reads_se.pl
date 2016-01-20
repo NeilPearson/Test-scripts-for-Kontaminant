@@ -1,6 +1,7 @@
 #!/usr/bin/perl -w
 use strict;
 use List::Util qw(shuffle);
+use File::Basename;
 
 # Takes a reads file, a contaminant reads file and an integer as input.
 # Mixes the supplied number of reads from the contaminant in with the other reads, shuffles them up so they're in a different order, and
@@ -81,7 +82,7 @@ for my $i (1..$use_n_contaminant_reads) {
     $tag =~ s/\>/\@/;
     $sp1[0] = $tag;
     # Get a subset of the sequence with an appropriate length
-    my $seq = substr($sp1[1], rand(length($sp1[1]) - $maxread - 1), $maxread);
+    my $seq = substr($sp1[1], rand(length($sp1[1]) - $maxread - 2), $maxread - 1);
     $sp1[1] = $seq;
     $sp1[2] = "+";
     my $qstr = ();
@@ -89,7 +90,8 @@ for my $i (1..$use_n_contaminant_reads) {
     $sp1[3] = $qstr;
     
     my $fakeread = join "\n", @sp1;
-    push @reads, $fakeread;
+    chomp $fakeread;
+    push @reads, "$fakeread\n";
 }
 
 @reads = shuffle(@reads);
