@@ -91,6 +91,8 @@ if (@buffer) {
 # Now, it's possible to generate a number of fake FASTQ reads and put them in with the rest.
 my @qscores = qw/A B C D E F/;
 for my $i (1..$use_n_contaminant_reads) {
+    # Printed unique ID number should be zero-padded to avoid conflicts.
+    my $printed_uid = sprintf("%0".length($use_n_contaminant_reads)."d", $i);
     # Select a contig at random. (Yeah, this will give a bias towards the shorter contigs, if there's more than one. I'll do a weighted random choice in a later version).
     my $contig = $contaminant_contigs[rand @contaminant_contigs];
     # Tag the read as a contaminant so I can identify it later.
@@ -98,7 +100,16 @@ for my $i (1..$use_n_contaminant_reads) {
     my @sp1 = split /\n/, $contig;
     my $tag = $sp1[0];
     chomp $tag;
-    $tag .= " CONTAMINANT $contaminant uid $i";
+    
+    # I need to split the$tag on spaces and add a /1 tag (R1) to the end of the first section. It gets picked up later on, in blast_outfmt6_count_paired.pl, etc.
+    my @tagsplit = split /\s/, $tag;
+    unless ($tagsplit[0] =~ /\/[12]$/) {
+        #ÊObviously, only do this if it doesn't already have a tag in the right place.
+        $tagsplit[0] = $tagsplit[0]."_uid$printed_uid/1";
+    }
+    $tag = join("\t", @tagsplit);
+    
+    $tag .= " CONTAMINANT $contaminant";
     $tag =~ s/\>/\@/;
     $sp1[0] = $tag;
     # Get a subset of the sequence with an appropriate length
@@ -118,6 +129,13 @@ for my $i (1..$use_n_contaminant_reads) {
     # (Yes, I know that due to the way paired ends work, I should pick a sequence a bit further along the contig too.
     # I'll do that in the future).
     my @sp2 = split /\n/, $r2;
+    # Modify that read tag in the first word
+    $tag = $sp2[0];
+    @tagsplit = split /\s/, $tag;
+    $tagsplit[0] =~ s/1$/2/g;
+    $tag = join("\t", @tagsplit);
+    $sp2[0] = $tag;
+    
     $seq = $sp2[1];
     chomp $seq;
     $seq = reverse_complement($seq);

@@ -71,6 +71,8 @@ if (@buffer) {
 # Now, it's possible to generate a number of fake FASTQ reads and put them in with the rest.
 my @qscores = qw/A B C D E F/;
 for my $i (1..$use_n_contaminant_reads) {
+    # Printed unique ID number should be zero-padded to avoid conflicts.
+    my $printed_uid = sprintf("%0".length($use_n_contaminant_reads)."d", $i);
     # Select a contig at random. (Yeah, this will give a bias towards the shorter contigs, if there's more than one. I'll do a weighted random choice in a later version).
     my $contig = $contaminant_contigs[rand @contaminant_contigs];
     # Tag the read as a contaminant so I can identify it later.
@@ -78,7 +80,7 @@ for my $i (1..$use_n_contaminant_reads) {
     my @sp1 = split /\n/, $contig;
     my $tag = $sp1[0];
     chomp $tag;
-    $tag .= " CONTAMINANT $contaminant uid $i";
+    $tag .= " CONTAMINANT $contaminant uid $printed_uid";
     $tag =~ s/\>/\@/;
     $sp1[0] = $tag;
     # Get a subset of the sequence with an appropriate length

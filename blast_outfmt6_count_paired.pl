@@ -25,7 +25,13 @@ close BLAST;
 # qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
 
 # We need to get the best (primary) alignment for each query sequence. Use my buffer trick.
-my $count = 0;  my $r1only = 0; my $r2only = 0;
+my $count = 0;
+my $r1only = 0;
+my $r2only = 0;
+my $contaminant_only = 0;
+my $contaminant_r1only = 0;
+my $contaminant_r2only = 0;
+
 my $prev_query = "Nothing yet!";
 my $query = "Nothing yet!";
 my @buffer = ();
@@ -59,6 +65,9 @@ LINE: while(my $line = <INFILE>) {
                 my $bestline_r1 = ();   my $bestline_r2 = ();
                 my $bestscore_r1 = 0;   my $bestscore_r2 = 0;
                 
+                my $real_contaminant = ();
+                if ($prev_query =~ /accn/) { $real_contaminant = 1; }
+                
                 foreach my $passedline (@buffer) {
                     my $p_log_evalue = $passedline->[10];
                     my $mapped_query = $passedline->[0];
@@ -82,11 +91,19 @@ LINE: while(my $line = <INFILE>) {
                 # This need not be complex - we simply require a sufficiently well aligned result for read 1 AND read 2. 
                 if (($bestline_r1) && ($bestline_r2)) {
                     $count ++;
+                    if ($real_contaminant) { $contaminant_only ++; }
+                    
                 }
                 # That said, it would also be useful to count the number of instances where only read 1 or 2 is present separately.
                 # Note that this is FizzBuzz. Funny stuff.
-                elsif ($bestline_r1) { $r1only ++; }
-                elsif ($bestline_r2) { $r2only ++; }
+                elsif ($bestline_r1) {
+                    $r1only ++;
+                    if ($real_contaminant) { $contaminant_r1only ++; }
+                }
+                elsif ($bestline_r2) {
+                    $r2only ++;
+                    if ($real_contaminant) { $contaminant_r2only ++; }
+                }
             }
             # CLEAR THE BUFFER!
             @buffer = ();
@@ -94,16 +111,16 @@ LINE: while(my $line = <INFILE>) {
         
         # Put the current query ID to $prev_query so we know if it's time to take a look in the buffer next time round.
         $prev_query = $query;
-        
         # Filter out insufficiently long/good results
-        if ($sp[2] ne '100.00') { next LINE; }
+        if ($sp[2] < 100) { next LINE; }
         if ($sp[3] < 50) { next LINE; }
         
         # If we've got this far, this alignment has passed the filters and we can add it to the buffer.
         push @buffer, \@sp;
+        
     }
 }
 close INFILE;
 
-print "Both reads:\t$count\nR1 only:\t$r1only\nR2 only:\t$r2only\n";
+print "All alignments\nBoth reads:\t$count\nR1 only:\t$r1only\nR2 only:\t$r2only\n\nReal contaminants only\nBoth reads:\t$contaminant_only\nR1 only:\t$contaminant_r1only\nR2 only:\t$contaminant_r2only\n";
 

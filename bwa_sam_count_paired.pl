@@ -7,7 +7,8 @@ my $file = $ARGV[0];
 # via SAM binary flags rather than as a tag in the query name. 
 # ( samtools view -q 60 $results )
 
-my $sam = `source samtools-1.2.0; samtools view -q 60 $file`;
+#my $sam = `source samtools-1.2.0; samtools view -q 60 $file`;
+my $sam = `source samtools-1.2.0; samtools view $file`;
 my @sam = split /\n/, $sam;
 
 # Now I'll need to do the same sort of buffered loop as the one in the other script.
@@ -33,31 +34,29 @@ foreach my $line (@sam) {
         # If the previous query is not the same as the current one, it means we've moved to another one, which means we've
         # successfully picked out all the records (if any) that match the previous one.
         # Take a look, pick the best one, and add it to the results thus far.
-        # (I'm not completely sure, but I think 'best' in this case can be most effectively quantified by lowest e-value)
+        # 'Best' here is indicated by the flag marking the alignment as a primary alignment.
         if (($query ne $prev_query) || ($i == $lc)) {
             if (@buffer) {
                 # Modified to have 2 concurrent counts, as described above!
                 my $bestline_r1 = ();   my $bestline_r2 = ();
-                my $bestscore_r1 = 0;   my $bestscore_r2 = 0;
-                foreach my $passedline (@buffer) {
+                ALIGNMENT: foreach my $passedline (@buffer) {
                     my $p_log_evalue = $passedline->[10];
                     # We get the read this query is in from the numeric flag field.
                     my $flag = $passedline->[1];
-                    my $bin = sprintf("%b", $flag);
+                    my $bin = sprintf("%012b", $flag);
                     my @bits = split //, $bin;
-                    # We want the 2nd bit, 'read mapped in proper pair'; we shouldn't do anything if that's not == 1.
+                    # If read isn't mapped, we're not interested.
+                    if ($bits[2]) { next ALIGNMENT; }
+                    
+                    # Get only primary alignments - check flag
+                    if($bits[8]) { next ALIGNMENT; }
+                    
                     # The read number can be found from the 7th/8th bit; 7th being read 1, 8th being read 2.
-                    if (($bits[6] == 1) && ($bits[1] == 1)) {
-                        if ($p_log_evalue < $bestscore_r1) {
-                            $bestline_r1 = $passedline;
-                            $bestscore_r1 = $p_log_evalue;
-                        }
+                    if ($bits[6]) {
+                        $bestline_r1 = $passedline;
                     }
-                    elsif (($bits[7] == 1) && ($bits[1] == 1)) {
-                        if ($p_log_evalue < $bestscore_r2) {
-                            $bestline_r2 = $passedline;
-                            $bestscore_r2 = $p_log_evalue;
-                        }
+                    elsif ($bits[7]) {
+                        $bestline_r2 = $passedline;
                     }
                 }
                 

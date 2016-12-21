@@ -1,0 +1,1407 @@
+We wanted to carry out a comprehensive set of tests on Kontaminant, in order to identify any areas where further action was required, and to assess how it performed in comparison to other software used for the purpose of screening sequencing datasets for contaminants.
+
+Types of testing carried out:
+-Functional (create read files with known amounts of contamination and check reported as expected).
+-Spike-in (drop in some whole reads from non-target genomes).
+-Chimeric reads (drop in some reads that are partially target sequence, partially contaminant sequence).
+-Close relatives of contaminants scanned for.
+
+Comparison with BWA-based approach, in terms of true positives and false positives/negatives (i.e., confusion matrix), and time and resources to run.
+Create more substantial read set with spike in of more than 1 contaminant.
+How well does kontaminant perform, compared to bwa, on high/variable/low quality data?
+
+This is best assessed with real datasets, if possible. I have written scripts to introduce contaminant reads (incl. chimeric reads) from a reference genome, with a set error level.
+Initially, I downloaded a number of read datasets from the ENA database, in order to reflect real-world usage of the tool. These datasets were selected partially for their variance in read quality and length, ranging from long, high quality reads to short reads showing a significant range of variation in quality. Others were synthesised from reference genomes, in order to remove (as far as reasonably possible) all potential sources of false-positive contamination prior to the introduction of known contaminants.
+Contamination was introduced at varying levels, and from various sources, to reflect a range of plausible and challenging scenarios. These included very high rates of contamination with sequence variation randomly added to the contaminant reads to reflect damage to DNA, and moderate contamination from a species closely related to the target species. 
+For later tests (when performance in some edge cases had already been assessed), read sets were generated from reads taken from a single wheat sequencing run, and an E. coli reference genome.
+
+
+Comparisons
+Performance of Kontaminant, in terms of speed and accuracy of identification, was compared to that of BWA. 
+Test:
+A fair comparison between the two tools is only possible with a common baseline against which the results of other analyses can be judged. When screening a dataset where the number of non-contaminant reads are not explicitly known in advance, it is generally not possible to attribute with confidence the proportion of abundance of a contaminant due to its presence in the original sample, versus that due to its presence caused by library preparation errors, sequencing instrument contamination, sequence homology due to common descent, etc. By establishing this baseline for a range of uncontaminated datasets, we were able to assess the likelihood that Kontaminant and BWA are able to correctly detect contamination at various levels against a known background of other factors. This baseline was also taken into account in following tests.
+(This is a long way of saying that I generated the false positive/true negative values for a confusion matrix first).
+A test under effectively perfect conditions was carried out by screening a wholly synthetic paired-end dataset with a very distantly related contaminant introduced at a moderate abundance. Datasets with chimeric only, complete reads only, and a mixture of both were screened. This test showed the frequency of false positives that could be recognised as such with the highest level of confidence. 
+Long-read paired-end, short-read paired-end and short-read single-end datasets of predominantly high quality reads were then screened. High [x%] and low [y%] levels of contamination from [genome] were introduced to this dataset, in order to estimate the performance of the screening tools when presented with these different challenges. [Ideal challenge here would be to contaminate with, say, one strain of E. coli, but to screen against a second - a commonly used reference strain]. High contamination rates present the challenge that false negative classifications may allow an unacceptable number of contaminated reads to pass the filter, while low contamination rates may not be conclusively identifiable above the baseline rate of false positives.
+A short-read single-end dataset showing a large range of variation in read quality was screened. High [x%] and low [y%] levels of contamination were introduced to this dataset. In this test, a degree of random variation [average z% of introduced bases] was introduced into the contaminant sequences to reflect the variable read quality. This test was designed to highlight a potential scenario in which alignment score-based methods such as BWA may be reasonably expected to outperform kmer-based methods like Kontaminant.
+A short-read dataset with variable but predominantly low-quality reads (for an Illumina run) was screened. As with test 4, high [x%] and low [y%] levels of contamination were introduced, with [z%] average variation in the contaminant genome - a species relatively closely related to the target species. This test was intended to represent the most challenging conditions possible for reliable identification of contaminant reads. 
+
+Performance of Blastn, BWA and Kontaminant - in terms of confusion matrix values and computational resources/time required - was measured for all of the above cases.
+Following that, we used an additional dataset to measure further performance characteristics of Kontaminant:
+-hOw does varying the threshold and read threshold settings in Kontaminant affect the results in the confusion matrix when we try to screen for larger numbers of reference genomes at the same time?
+-How well does Kontaminant handle sequencing errors present at certain rates, in comparison to BWA and Blastn?
+-How does Kontaminant scale up when given a larger number of reads? (i.e., what is its computational complexity?) How does this compare to Blastn/BWA?
+-How well does a multithreaded version of kontaminant perform given a range of computational resources and thread settings?
+
+
+
+
+
+First, used remove_short_reads.pl to remove reads shorter than the maximum read length. 
+
+perl ~/Scripts/remove_short_reads.pl data/enadata/arabidopsis/SRR1491254_pe_1.fastq > data/enadata/arabidopsis/SRR1491254_pe_trimmed_1.fastq 101
+perl ~/Scripts/remove_short_reads.pl data/enadata/arabidopsis/SRR1491254_pe_2.fastq > data/enadata/arabidopsis/SRR1491254_pe_trimmed_2.fastq 101
+
+WRONG! This needs to be done in a manner that makes sense for paired-end data, otherwise BWA will (rightly) nope out.
+
+perl ~/Scripts/remove_short_reads_pe.pl data/enadata/arabidopsis/SRR1491254_pe_1.fastq data/enadata/arabidopsis/SRR1491254_pe_2.fastq 101 data/enadata/arabidopsis/SRR1491254_pe_trimmed_1.fastq data/enadata/arabidopsis/SRR1491254_pe_trimmed_2.fastq 101
+
+
+I want to change the way I handle paired end stuff for blastn and bwa. Those are different things, but part of the solution is the same.
+Change the original file so that ID headers are a bit different. Replace spaces with - in there.
+Include an easily distinguishable pattern as well. Read 1 seqs get a /1 at the end of the header, read 2 seqs get a /2.
+I had originally planned on replacing the / characters as well, but 1) they're used in the quality scores and 2) they're probably not a problem.
+
+sed 's/ /-/' <data/enadata/arabidopsis/SRR1491254_1.fastq >data/enadata/arabidopsis/SRR1491254_pe_1.fastq
+sed 's/ /-/' <data/enadata/arabidopsis/SRR1491254_2.fastq >data/enadata/arabidopsis/SRR1491254_pe_2.fastq
+
+
+Now I need to modify the blastn screening script, and also probably write one for the bwa stuff.
+Oh, and the contaminator script as well! (Done)
+And write something to interleave the reads in a FASTA file, like I mention elsewhere. (Done)
+
+
+First, I need an example BLASTN result that I can use to check things are working as intended. (Got - results/contaminated_reads_scan/blastn/arabidopsis/Streptomyces_coelicolor_A3_2.txt)
+Looks like it's doing what it's supposed to! Need to check more thoroughly, of course. That makes my life one hell of a lot easier. I can now tell if I've moved to a different query simply by stripping the /1 and /2 in that loop. Dead easy.
+
+
+
+Alright, so what actually needs doing here?
+1. Write/rewrite scripts to do paired-end screening in a more sensible manner.
+    (Incl. muck around with data to facilitate it) (Done, I think)
+2. Got to basically re-do everything almost from the top for this, since I need to re-make a lot of data files. (Done)
+2.5 Get all screening counts data; don't care about speed here (Except screening speed) (Done)
+3. Get 4-core results.
+3.5 Get all speed data; don't care about counts here.
+4. Filter (instead of screen) with kontaminant, and BLAST the resulting non-contaminant reads on the NCBI website.
+5. Re-index the multiref tests with a single index and use a big list file for the reference input in kontaminant. Look for disproportionately represented references, or kmers.
+
+
+
+
+
+Chop it up into smaller, named datasets (based on number of reads). We'll use this to assess computational complexity (big-O). 
+rdir="data/enadata/arabidopsis";
+sid="SRR1491254_pe_trimmed";
+for i in 50 100 200 400 600 800 1000; do
+    n=$((i*4000));
+    echo $i;
+    head -n $n $rdir/${sid}_1.fastq > $rdir/${sid}_1_basic_${i}k.fastq;
+    head -n $n $rdir/${sid}_2.fastq > $rdir/${sid}_2_basic_${i}k.fastq;
+done
+
+
+Artificial contamination can now be introduced in a separate file. This gives us a contaminated dataset that is clearly distinct from the original set. 
+
+dataset="data/enadata/arabidopsis";
+sid="SRR1491254_pe_trimmed";
+refset="reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta";
+for i in 50k 100k 200k 400k 600k 800k 1M; do
+    echo $i;
+    read1=$dataset/${sid}_1_basic_${i}.fastq;
+    read2=$dataset/${sid}_2_basic_${i}.fastq;
+    log=logs/contaminate_${i}.slurm;
+    perl ~/Scripts/contaminate_reads_pe.pl $read1 $read2 $refset 10000;
+done
+
+
+Convert those to FASTA files, because that's the input that Blastn takes.
+(NOTE: This should produce both contaminated and non-contaminated sets at the same time!)
+
+sid="SRR1491254_pe_trimmed";
+for dataset in data/enadata/arabidopsis; do
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        rs=`basename $refset`;
+        rs=${rs/fasta/fastq};
+        for i in 50k 100k 200k 400k 600k 800k 1M; do
+            read1=$dataset/${sid}_1_basic_${i}_CONTAMINATED_${rs};
+            read2=$dataset/${sid}_2_basic_${i}_CONTAMINATED_${rs};
+            readfa=${read1/fastq/fasta};
+            readfa=${readfa/_1_/_};
+            echo $readfa;
+            perl ~/Scripts/interleave_fasta.pl $read1 $read2 > $readfa;
+            read1=$dataset/${sid}_1_basic_${i}.fastq;
+            read2=$dataset/${sid}_2_basic_${i}.fastq;
+            readfa=${read1/fastq/fasta};
+            readfa=${readfa/_1_/_};
+            echo $readfa;
+            perl ~/Scripts/interleave_fasta.pl $read1 $read2 > $readfa;
+        done;
+    done;
+done
+
+
+Make errored data; introduce contamination with per-base errors at the range of set rates.
+
+ds="arabidopsis";
+sid="SRR1491254_pe_trimmed";
+rs="Streptomyces_coelicolor_A3_2";
+read1=data/enadata/$ds/${sid}_1_basic_100k_CONTAMINATED_${rs}.fastq;
+read2=data/enadata/$ds/${sid}_2_basic_100k_CONTAMINATED_${rs}.fastq;
+for err in 0.01 0.1 0.5 1 2 5 10; do
+    echo "Error rate: $err";
+    out1=$read1;
+    out2=$read2
+    out1=${out1/.fastq/_ERROR_${err}.fastq};
+    out2=${out2/.fastq/_ERROR_${err}.fastq};
+    fasta=${out1/fastq/fasta};
+    fasta=${fasta/_1_/_};
+    perl ~/Scripts/mutate.pl $read1 $err $err 10 > $out1;
+    perl ~/Scripts/mutate.pl $read2 $err $err 10 > $out2;
+    perl ~/Scripts/interleave_fasta.pl $out1 $out2 > $fasta;
+done
+
+
+
+Make indexes for a large number of bacterial genomes. This is used when investigating effect of threshold and readthreshold settings on multi-reference screening sets.
+cd reference_genomes/kon/multiref
+for i in *.fasta; do
+    echo $i;
+    bsub -oo /dev/null -q Prod128 "kontaminant -i -g FASTA -1 $i";
+done
+cd ../../..
+
+I should also make some lists of files that I can pass to kontaminant. (Specifying the names of references)
+Do those need the full path in? I'm going to guess they do.
+Oh, and it looks like I need to strip the .fasta part of the path.
+
+for i in 1 10 100 300 656; do
+    echo $i;
+    ls -1 $PWD/reference_genomes/kon/multiref/*.fasta | head -$i | xargs -n1 basename | sed 's/.fasta//' > $PWD/reference_genomes/kon/multiref_${i}.txt;
+done
+
+To use those as inputs for kontaminant:
+kontaminant -e [list_file.txt]
+
+
+Make reads contaminated with these multiple references. Note that this can take a while.
+656 set needs 16GB RAM, not 8GB. 
+sbatch -c [threads] -p [queue] -o [stdout_file] -e [stderr_file] -J [name] --mem [mem_MB] --wrap '[cmd]'
+sid="SRR1491254_pe_trimmed";
+i="400k";
+read1=$dataset/${sid}_1_basic_${i}.fastq;
+read2=$dataset/${sid}_2_basic_${i}.fastq;
+for mr in 1 10 100 300 656; do
+    refset=reference_genomes/bwa/multiref_${mr}.fasta
+    sbatch -p tgac-short -c 1 --mem 16384 --wrap "perl ~/Scripts/contaminate_reads_pe.pl $read1 $read2 $refset 100000";
+done
+
+Make FASTA files of those reads.
+sid="SRR1491254_pe_trimmed";
+i="400k";
+for dataset in data/enadata/arabidopsis; do
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/multiref*.fasta; do
+        rs=`basename $refset`;
+        rs=${rs/fasta/fastq};
+        read1=$dataset/${sid}_1_basic_${i}_CONTAMINATED_${rs};
+        read2=$dataset/${sid}_2_basic_${i}_CONTAMINATED_${rs};
+        readfa=${read1/fastq/fasta};
+        readfa=${readfa/_1_/_};
+        sbatch -o log_${rs}.slurm -e log_${rs}.slurm -p tgac-short -c 1 --mem 8192 --wrap "perl ~/Scripts/interleave_fasta.pl $read1 $read2 > $readfa";
+    done;
+done
+
+
+-0- Screen uncontaminated reads
+As discussed earlier, this gives us false positive/true negative rates. 
+
+Run kontaminant, Blastn, BWA, etc.
+
+sid="SRR1491254_pe_trimmed";
+test="basic_reads_scan";
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_100k.fastq;
+        read2=$dataset/${sid}_2_basic_100k.fastq;
+        read1fa=${read1/fastq/fasta};
+        readfa=${read1fa/_1_/_};
+        # Set up log and output directories
+        for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds; mkdir -p results/$test/$aln/$ds; done;
+        # OK, NOW we can do the alignments.
+        log=logs/$test/kon/$ds/${rs}.slurm;
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "time kontaminant -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > results/$test/kon/$ds/${rs}.kon ";
+        echo $log;
+        log=logs/$test/bwa/$ds/${rs}.slurm;
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "time bwa mem -t 1 reference_genomes/bwa/${rs}.fasta $read1 $read2 > results/$test/bwa/$ds/${rs}.sam";
+        echo $log;
+        log=logs/$test/blastn/$ds/${rs}.slurm;
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "time blastn -db reference_genomes/blastn/${rs}.fasta -query $readfa -out results/$test/blastn/$ds/${rs}.txt -outfmt 6 -num_threads 1";
+        echo $log;
+    done;
+done
+
+
+Do screening of Blastn/BWA results (kontaminant is already done)
+
+test="basic_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/Strep*.sam; do
+        echo " ";
+        echo $f;
+        log="${f}_screen.log";
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "perl ~/Scripts/bwa_sam_count_paired.pl $f";
+    done;
+done
+
+test="basic_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/Strep*.sam; do
+        echo " ";
+        echo $f;
+        perl ~/Scripts/bwa_sam_count_paired.pl $f;
+    done;
+done
+
+Better way to screen these is to simply pass the SAM files to samtools flagstat.
+The value to look for here is "n + 0 properly paired (n.nn% : N/A)"
+
+samtools flagstat results/$test/bwa/arabidopsis/Streptomyces_coelicolor_A3_2.sam
+
+test="basic_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        log="${f}_screen.log";
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "perl ~/Scripts/blast_outfmt6_count_paired.pl $f";
+    done;
+done
+
+Get BLAST results by doing a tail -n 1 on the log file.
+
+test="basic_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        tail -n 1 ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="basic_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        tail -n 1 ${f}_screen.log;
+    done;
+done
+
+Get kontaminant results from the output files directly. Do a grep on them
+(On paired-end runs, may want to grep for 'Remaining reads with at least 1 unique kner in each')
+
+test="basic_reads_scan";
+for rd in results/$test/kon/arabidopsis; do
+    for f in $rd/*.kon;
+        do echo " ";
+        echo $f;
+        grep 'Reads meeting threshold (all kmers)' $f;
+    done;
+done
+
+Get run times.
+
+test="basic_reads_scan";
+for f in logs/$test/*/arabidopsis/*.lsf; do
+    echo " ";
+    echo $f;
+    awk 'NR==22{print;exit}' $f;
+done
+
+Get Blastn screening times too.
+
+test="basic_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way.
+
+test="basic_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+
+-0- Screen contaminated reads
+
+Repeat the previous screening on the set of reads where contamination has been deliberately introduced.
+
+Run kontaminant, Blastn, BWA, etc.
+
+sid="SRR1491254_pe_trimmed";
+test="contaminated_reads_scan";
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_100k_CONTAMINATED_${rs}.fastq;
+        read2=$dataset/${sid}_2_basic_100k_CONTAMINATED_${rs}.fastq;
+        read1fa=${read1/fastq/fasta};
+        readfa=${read1fa/_1_/_};
+        # Set up log and output directories
+        for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds; mkdir -p results/$test/$aln/$ds; done;
+        # OK, NOW we can do the alignments.
+        log=logs/$test/kon/$ds/${rs}.slurm;
+        echo $log;
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "time kontaminant -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > results/$test/kon/$ds/${rs}.kon ";
+        log=logs/$test/bwa/$ds/${rs}.slurm;
+        echo $log;
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "time bwa mem reference_genomes/bwa/${rs}.fasta $read1 $read2 > results/$test/bwa/$ds/${rs}.sam";
+        log=logs/$test/blastn/$ds/${rs}.slurm;
+        echo $log;
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "time blastn -db reference_genomes/blastn/${rs}.fasta -query $readfa -out results/$test/blastn/$ds/${rs}.txt -outfmt 6";
+    done;
+done
+
+Do screening of Blastn/BWA results (kontaminant is already done)
+
+test="contaminated_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam; do
+        echo " ";
+        echo $f;
+        log="${f}_screen.log";
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "perl ~/Scripts/bwa_sam_count_paired.pl $f";
+    done;
+done
+
+
+Better way to screen these is to simply pass the SAM files to samtools flagstat.
+The value to look for here is "n + 0 properly paired (n.nn% : N/A)"
+
+samtools flagstat results/$test/bwa/arabidopsis/Streptomyces_coelicolor_A3_2.sam
+
+test="contaminated_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        log="${f}_screen.log";
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "perl ~/Scripts/blast_outfmt6_count_paired.pl $f";
+    done;
+done
+
+
+Alrighty then, let's actually get those numbers out and written up in excel.
+Get BLAST results by doing a tail -n 1 on the log file.
+
+test="contaminated_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        cat ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way
+
+test="contaminated_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        cat ${f}_screen.log;
+    done;
+done
+
+Get kon results from the output files directly. Do a grep on them?
+(On paired-end runs, may want to grep for 'Remaining reads with at least 1 unique kner in each')
+test="contaminated_reads_scan";
+for rd in results/$test/kon/arabidopsis; do
+    for f in $rd/*.kon;
+        do echo " ";
+        echo $f;
+        grep 'Reads meeting threshold (all kmers)' $f;
+    done;
+done
+
+Get run times.
+
+test="contaminated_reads_scan";
+for f in logs/$test/*/arabidopsis/*.lsf; do
+    echo " ";
+    echo $f;
+    awk 'NR==22{print;exit}' $f;
+done
+
+Get Blastn screening times too!
+
+test="contaminated_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="contaminated_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+
+-0- Digging into contaminated/uncontaminated results
+
+In the previous test, kontaminant falsely identified 127 pairs as belonging to the contaminant when they in fact do not. We want to know what's going on there; get the reads, and BLAST them to see what they are.
+To get them out is a 2-step process. First, use kontaminant in filtering mode to get all contaminant reads. Then separate all reads that don't have a big CONTAMINANT tag in their IDs. Second, use a perl script to extract only the reads we actually want to look at here.
+queue] -o [stdout_file] -e [stderr_file] -J [name] --mem [mem_MB] --wrap '[cmd]'
+
+Filtering with kontaminant.
+Use the -f flag instead of -s
+Use -r flag to specify prefix for removed reads. Don't know what that prefix is going to look like, so just fire away!
+Use -x flag to keep contaminated reads
+
+
+sid="SRR1491254_pe_trimmed";
+test="contaminated_reads_scan";
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_100k_CONTAMINATED_${rs}.fastq;
+        read2=$dataset/${sid}_2_basic_100k_CONTAMINATED_${rs}.fastq;
+        read1fa=${read1/fastq/fasta};
+        # Set up log and output directories
+        for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds; mkdir -p results/$test/$aln/$ds; done;
+        # OK, NOW we can do the alignments.
+        log=logs/$test/kon/$ds/${rs}.slurm;
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 16384 --wrap "time kontaminant -f -x -o results/ -r "cont_" -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > results/$test/kon/$ds/${rs}.kon ";
+    done;
+done
+
+The filtered reads are in results/cont*
+
+Now write that perl script.
+perl ~/Scripts/remove_tagged_reads.pl cont_SRR1491254_pe_1_basic_100k_CONTAMINATED_Streptomyces_coelicolor_A3_2.fastq > cont_hostonly_r1.fastq
+
+Oh, and it has to be in fasta in order to be BLASTed.
+BLASTing done. Interesting results found. (Looks like it's chloroplast DNA).
+Now, we should increase the strictness of the matching criteria. How do I do that?
+Use the threshold (-t) argument. Default 10. What happens at 15, 20, 25 30?
+Use the readthreshold (-v) argument. Default 1. What happens at 2, 3, 4, 5?
+Note that we're going back to screening here.
+
+Try changing the threshold:
+sid="SRR1491254_pe_trimmed";
+test="contaminated_reads_scan";
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_100k_CONTAMINATED_${rs}.fastq;
+        read2=$dataset/${sid}_2_basic_100k_CONTAMINATED_${rs}.fastq;
+        read1fa=${read1/fastq/fasta};
+        for thresh in 5 15 20 25 30 40 50 60 70 80 90 100; do
+            # Set up log and output directories
+            for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds/thresh_${thresh}; mkdir -p results/$test/$aln/$ds/thresh_${thresh}; done;
+            # OK, NOW we can do the alignments.
+            log=logs/$test/kon/$ds/thresh_${thresh}/${rs}.slurm;
+            results=results/$test/kon/$ds/thresh_${thresh}/${rs}.kon
+            echo $results;
+            kontaminant -t $thresh -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > $results;
+        done;
+    done;
+done
+
+sid="SRR1491254_pe_trimmed";
+test="basic_reads_scan";
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_100k.fastq;
+        read2=$dataset/${sid}_2_basic_100k.fastq;
+        read1fa=${read1/fastq/fasta};
+        for thresh in 5 15 20 25 30 40 50 60 70 80 90 100; do
+            # Set up log and output directories
+            for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds/thresh_${thresh}; mkdir -p results/$test/$aln/$ds/thresh_${thresh}; done;
+            # OK, NOW we can do the alignments.
+            log=logs/$test/kon/$ds/thresh_${thresh}/${rs}.slurm;
+            results=results/$test/kon/$ds/thresh_${thresh}/${rs}.kon
+            echo $results;
+            kontaminant -t $thresh -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > $results;
+        done;
+    done;
+done
+
+Try changing the readthreshold:
+sid="SRR1491254_pe_trimmed";
+test="contaminated_reads_scan";
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_100k_CONTAMINATED_${rs}.fastq;
+        read2=$dataset/${sid}_2_basic_100k_CONTAMINATED_${rs}.fastq;
+        read1fa=${read1/fastq/fasta};
+        for thresh in 2 3 4 5 10 15 20 25 30 40 50 60 70 80 90 100; do
+            # Set up log and output directories
+            for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds/readthresh_${thresh}; mkdir -p results/$test/$aln/$ds/readthresh_${thresh}; done;
+            # OK, NOW we can do the alignments.
+            log=logs/$test/kon/$ds/readthresh_${thresh}/${rs}.slurm;
+            results=results/$test/kon/$ds/readthresh_${thresh}/${rs}.kon;
+            echo $results;
+            kontaminant --readthreshold $thresh -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > $results;
+        done;
+    done;
+done
+
+
+sid="SRR1491254_pe_trimmed";
+test="basic_reads_scan";
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_100k.fastq;
+        read2=$dataset/${sid}_2_basic_100k.fastq;
+        read1fa=${read1/fastq/fasta};
+        for thresh in 2 3 4 5 10 15 20 25 30 40 50 60 70 80 90 100; do
+            # Set up log and output directories
+            for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds/readthresh_${thresh}; mkdir -p results/$test/$aln/$ds/readthresh_${thresh}; done;
+            # OK, NOW we can do the alignments.
+            log=logs/$test/kon/$ds/readthresh_${thresh}/${rs}.slurm;
+            results=results/$test/kon/$ds/readthresh_${thresh}/${rs}.kon;
+            echo $results;
+            kontaminant --readthreshold $thresh -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > $results;
+        done;
+    done;
+done
+
+
+Try messing with both... AT THE SAME TIME!
+Specifically, try setting readthreshold to threshold / 2 (because that's the max value it can logically be).
+
+Try messing with the threshold:
+sid="SRR1491254_pe_trimmed";
+test="contaminated_reads_scan";
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_100k_CONTAMINATED_${rs}.fastq;
+        read2=$dataset/${sid}_2_basic_100k_CONTAMINATED_${rs}.fastq;
+        read1fa=${read1/fastq/fasta};
+        for thresh in 10 14 18 22 26 30 40 50 60 70 80 90 100; do
+            readthresh=$(($thresh/2));
+            # Set up log and output directories
+            for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds/thresh_${thresh}_readthresh_${readthresh}; mkdir -p results/$test/$aln/$ds/thresh_${thresh}_readthresh_${readthresh}; done;
+            # OK, NOW we can do the alignments.
+            log=logs/$test/kon/$ds/thresh_${thresh}_readthresh_${readthresh}/${rs}.slurm;
+            results=results/$test/kon/$ds/thresh_${thresh}_readthresh_${readthresh}/${rs}.kon;
+            echo $results;
+            kontaminant -t $thresh --readthreshold $readthresh -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > $results;
+        done;
+    done;
+done
+
+Control experiment
+
+sid="SRR1491254_pe_trimmed";
+test="basic_reads_scan";
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_100k.fastq;
+        read2=$dataset/${sid}_2_basic_100k.fastq;
+        read1fa=${read1/fastq/fasta};
+        for thresh in 10 14 18 22 26 30 40 50 60 70 80 90 100; do
+            readthresh=$(($thresh/2));
+            # Set up log and output directories
+            for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds/thresh_${thresh}_readthresh_${readthresh}; mkdir -p results/$test/$aln/$ds/thresh_${thresh}_readthresh_${readthresh}; done;
+            # OK, NOW we can do the alignments.
+            log=logs/$test/kon/$ds/thresh_${thresh}_readthresh_${readthresh}/${rs}.slurm;
+            results=results/$test/kon/$ds/thresh_${thresh}_readthresh_${readthresh}/${rs}.kon;
+            echo $results;
+            kontaminant -t $thresh --readthreshold $readthresh -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > $results;
+        done;
+    done;
+done
+
+
+
+
+
+
+
+
+
+-0- scaling_test_dataset_size
+
+What happens when the datasets we're screening get larger? This is a measure of computational complexity.
+(Results could be expressible in big-O notification, but I haven't done that here).
+
+test="scaling_test_dataset_size";
+ds="arabidopsis";
+sid="SRR1491254_pe_trimmed";
+rs="Streptomyces_coelicolor_A3_2";
+contam="Streptomyces_coelicolor_A3_2";
+for i in 50k 100k 200k 400k 600k 800k 1M; do
+    echo $i;
+    read1=$dataset/${sid}_1_basic_${i}_CONTAMINATED_${rs}.fastq;
+    read2=$dataset/${sid}_2_basic_${i}_CONTAMINATED_${rs}.fastq;
+    
+    # Have to make a fasta file first... May as well do it here.
+    read1fa=${read1/fastq/fasta};
+    read2fa=${read2/fastq/fasta};
+    readfa=${read1fa/_1_/_};
+    # Set up log and output directories
+    for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds; mkdir -p results/$test/$aln/$ds; done;
+    log=logs/$test/kon/$ds/${rs}_${i}.slurm;
+    sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "time kontaminant -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > results/$test/kon/$ds/${rs}_${i}.kon";
+    echo $log;
+    log=logs/$test/bwa/$ds/${rs}_${i}.slurm;
+    sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "time bwa mem -t 1 reference_genomes/bwa/${rs}.fasta $read1 $read2 > results/$test/bwa/$ds/${rs}_${i}.sam";
+    echo $log;
+    log=logs/$test/blastn/$ds/${rs}_${i}.slurm;
+    sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "time blastn -db reference_genomes/blastn/${rs}.fasta -query $readfa -out results/$test/blastn/$ds/${rs}_${i}.txt -outfmt 6 -num_threads 1";
+done
+
+Do screening of Blastn/BWA results (kontaminant is already done)
+
+test="scaling_test_dataset_size";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam; do
+        echo " ";
+        echo $f;
+        bsub -q Prod128 -oo "${f}_screen.log" "perl ~/Scripts/bwa_sam_count_paired.pl $f";
+    done;
+done
+
+test="scaling_test_dataset_size";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam; do
+        echo " ";
+        echo $f;
+        samtools flagstat $f;
+    done;
+done
+
+test="scaling_test_dataset_size";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        bsub -q Prod128 -oo "${f}_screen.log" "perl ~/Scripts/blast_outfmt6_count_paired.pl $f";
+    done;
+done
+
+Alrighty then, let's actually get those numbers out and written up in excel.
+Get BLAST results by doing a tail -n 1 on the log file.
+
+test="scaling_test_dataset_size";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        tail -n 1 ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="scaling_test_dataset_size";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        tail -n 1 ${f}_screen.log;
+    done;
+done
+
+Get kon results from the output files directly. Do a grep on them?
+(On paired-end runs, may want to grep for 'Remaining reads with at least 1 unique kner in each')
+test="scaling_test_dataset_size";
+for rd in results/$test/kon/arabidopsis; do
+    for f in $rd/*.kon;
+        do echo " ";
+        echo $f;
+        grep 'Reads meeting threshold (all kmers)' $f;
+    done;
+done
+
+Get run times.
+
+test="scaling_test_dataset_size";
+for f in logs/$test/*/arabidopsis/*.lsf; do
+    echo " ";
+    echo $f;
+    awk 'NR==22{print;exit}' $f;
+done
+
+Get Blastn screening times too!
+
+test="scaling_test_dataset_size";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="scaling_test_dataset_size";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+
+
+
+-0- Error test
+
+What happens when we deliberately introduce sequencing errors (specifically, substitutions) to contaminant reads at a range of frequency levels?
+
+sid="SRR1491254_pe_trimmed";
+test="error_test";
+ds="arabidopsis";
+rs="Streptomyces_coelicolor_A3_2";
+for dataset in data/enadata/arabidopsis; do
+    for err in 0.01 0.1 0.5 1 2 5 10; do
+        echo $err;
+        read1=$dataset/${sid}_1_basic_100k_CONTAMINATED_${rs}_ERROR_${err}.fastq;
+        read2=$dataset/${sid}_2_basic_100k_CONTAMINATED_${rs}_ERROR_${err}.fastq;
+        
+        # Have to make a fasta file first... May as well do it here.
+        read1fa=${read1/fastq/fasta};
+        read2fa=${read2/fastq/fasta};
+        readfa=${read1fa/_1_/_};
+        # Set up log and output directories
+        for aln in kon bwa blastn; do
+            mkdir -p logs/$test/$aln/$ds;
+            mkdir -p results/$test/$aln/$ds;
+        done;
+        kontaminant -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > results/$test/kon/$ds/${rs}_${err}.kon;
+        bwa mem -t 1 reference_genomes/bwa/${rs}.fasta $read1 $read2 > results/$test/bwa/$ds/${rs}_${err}.sam;
+        blastn -db reference_genomes/blastn/${rs}.fasta -query $readfa -out results/$test/blastn/$ds/${rs}_${err}.txt -outfmt 6 -num_threads 1;
+    done;
+done
+
+Do screening of Blastn/BWA results (kontaminant is already done)
+
+test="error_test";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam; do
+        echo " ";
+        echo $f;
+        bsub -q Prod128 -oo "${f}_screen.log" "perl ~/Scripts/bwa_sam_count_paired.pl $f";
+    done;
+done
+
+test="error_test";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam; do
+        echo " ";
+        echo $f;
+        samtools flagstat $f;
+    done;
+done
+
+test="error_test";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        perl ~/Scripts/blast_outfmt6_count_paired.pl $f;
+    done;
+done
+
+
+Alrighty then, let's actually get those numbers out and written up in excel.
+Get BLAST results by doing a tail -n 1 on the log file.
+
+test="error_test";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        tail -n 1 ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="error_test";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        tail -n 1 ${f}_screen.log;
+    done;
+done
+
+Get kon results from the output files directly. Do a grep on them?
+(On paired-end runs, may want to grep for 'Remaining reads with at least 1 unique kmer in each')
+test="error_test";
+for rd in results/$test/kon/arabidopsis; do
+    for f in $rd/*.kon;
+        do echo " ";
+        echo $f;
+        grep 'Reads meeting threshold (all kmers)' $f;
+    done;
+done
+
+Get run times.
+
+test="error_test";
+for f in logs/$test/*/arabidopsis/*.lsf; do
+    echo " ";
+    echo $f;
+    awk 'NR==22{print;exit}' $f;
+done
+
+Get Blastn screening times too!
+
+test="error_test";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="error_test";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+
+
+
+-0- scaling_test_reference_size
+
+What happens when we screen agaginst bigger references? Or, more precisely, a larger number of references.
+
+Require some modification to previous procedures here; for now, we only really care about the kontaminant references.
+We'll also have to increase the -n and -b values so that kontaminant can have a bigger hash table and won't nope out due to excessive collisions.
+
+for dataset in data/enadata/arabidopsis; do
+    echo $dataset;
+    read1=$(ls $dataset/*1_basic_1M.fastq);
+    read2=$(ls $dataset/*2_basic_1M.fastq);
+    ds=`basename $dataset`;
+    if [[ -f $read1 ]];
+    then
+        for refset in reference_genomes/bwa/multiref*.fasta; do
+            bsub -q Prod128 "perl ~/Scripts/contaminate_reads_pe.pl $read1 $read2 $refset 500000"
+        done;
+    fi
+done
+
+Oh right, and I have to create fasta files and make BLASTn output directories as well. 
+data/enadata/arabidopsis/SRR1491254_2_basic_1M_CONTAMINATED_multiref_1.fastq
+
+sid="SRR1491254_pe_trimmed";
+for dataset in data/enadata/arabidopsis; do
+    for i in 1 10 100 300 656; do
+        read1=$dataset/${sid}_1_basic_${nr}_CONTAMINATED_multiref_${i}.fastq;
+        read2=$dataset/${sid}_2_basic_${nr}_CONTAMINATED_multiref_${i}.fastq;
+        read1fa=${read1/fastq/fasta};
+        read2fa=${read2/fastq/fasta};
+        perl ~/Scripts/fastq_to_fasta_properly.pl $read1 > $read1fa;
+        perl ~/Scripts/fastq_to_fasta_properly.pl $read2 > $read2fa;
+        readfa=${read1fa/_1_/_};
+        echo $readfa;
+        cat $read1fa $read2fa > $readfa;
+    done;
+done
+
+
+data/enadata/arabidopsis/SRR1491254_basic_1M_CONTAMINATED_multiref_1.fasta
+data/enadata/arabidopsis/SRR1491254_pe_trimmed_basic_400k_CONTAMINATED_multiref_656.fastq
+
+
+
+Run the alignments
+Note that I want to run kontaminant with the -e option, using a list of input files rather than a single huge library that doesn't tell us much.
+I also want to ramp the -n and -b parameters up some.
+
+Looks like I need to do some modifications to the list of files.
+-Supply -d as the directory where they're kept
+-Remove the .fasta off the end
+-Remove all paths
+
+That works, but takes a long time.
+
+Do the screening/alignment etc.
+
+test="scaling_test_reference_size";
+ds="arabidopsis";
+sid="SRR1491254_pe_trimmed";
+nr="400k";
+refdir=/tgac/scratch/pearsonn/kontaminant_test/reference_genomes/kon/multiref;
+for dataset in data/enadata/$ds; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for rsnum in 1 10 100 300 656; do
+        refset=reference_genomes/bwa/multiref_${rsnum}.fasta
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_${nr}_CONTAMINATED_${rs}.fastq;
+        read2=$dataset/${sid}_2_basic_${nr}_CONTAMINATED_${rs}.fastq;
+        read1fa=${read1/fastq/fasta};
+        readfa=${read1fa/_1_/_};
+        # Set up log and output directories
+        for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds; mkdir -p results/$test/$aln/$ds; done;
+        # OK, NOW we can do the alignments.
+        log=logs/$test/kon/$ds/${rs}.slurm;
+        sbatch -c 1 -o $log -e $log -p tgac-medium --mem 32000 --wrap "time kontaminant -s -n 23 -b 80 -d $refdir -c Acaryochloris_marina_MBIC11017_uid58167 -1 $read1 -2 $read2 > results/$test/kon/$ds/${rs}.kon ";
+        log=logs/$test/bwa/$ds/${rs}.slurm;
+        sbatch -c 1 -o $log -e $log -p tgac-medium --mem 32000 --wrap "time bwa mem reference_genomes/bwa/${rs}.fasta $read1 $read2 > results/$test/bwa/$ds/${rs}.sam";
+        log=logs/$test/blastn/$ds/${rs}.slurm;
+        sbatch -c 1 -o $log -e $log -p tgac-medium --mem 32000 --wrap "time blastn -db reference_genomes/blastn/${rs}.fasta -query $readfa -out results/$test/blastn/$ds/${rs}.txt -outfmt 6 -num_threads 1";
+    done;
+done
+
+That proved to need new kontaminant versions capable of properly using larger amounts of memory.
+Launched as follows:
+
+test="scaling_test_reference_size";
+ds="arabidopsis";
+sid="SRR1491254_pe_trimmed";
+nr="400k";
+refdir=/tgac/scratch/pearsonn/kontaminant_test/reference_genomes/kon/multiref;
+for dataset in data/enadata/$ds; do
+    echo $dataset;
+    ds=`basename $dataset`;
+    for rsnum in 1 10 ; do
+        refset=reference_genomes/bwa/multiref_${rsnum}.fasta
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_${nr}_CONTAMINATED_${rs}.fastq;
+        read2=$dataset/${sid}_2_basic_${nr}_CONTAMINATED_${rs}.fastq;
+        read1fa=${read1/fastq/fasta};
+        readfa=${read1fa/_1_/_};
+        # Set up log and output directories
+        for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds; mkdir -p results/$test/$aln/$ds; done;
+        # OK, NOW we can do the alignments.
+        log=logs/$test/kon/$ds/${rs}.slurm;
+        sbatch -c 1 -o $log -e $log -p tgac-medium --mem 32000 --wrap "time kontaminant -s -n 23 -b 80 -d $refdir -o results/$test/kon/$ds -e reference_genomes/kon/multiref_${rsnum}.txt -1 $read1 -2 $read2 > results/$test/kon/$ds/${rs}.kon ";
+    done;
+    for rsnum in 100; do
+        refset=reference_genomes/bwa/multiref_${rsnum}.fasta
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_${nr}_CONTAMINATED_${rs}.fastq;
+        read2=$dataset/${sid}_2_basic_${nr}_CONTAMINATED_${rs}.fastq;
+        read1fa=${read1/fastq/fasta};
+        readfa=${read1fa/_1_/_};
+        # Set up log and output directories
+        for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds; mkdir -p results/$test/$aln/$ds; done;
+        # OK, NOW we can do the alignments.
+        log=logs/$test/kon/$ds/${rs}.slurm;
+        sbatch -c 1 -o $log -e $log -p tgac-medium --mem 32000 --wrap "time kontaminant_n156 -s -n 23 -b 80 -d $refdir -o results/$test/kon/$ds -e reference_genomes/kon/multiref_${rsnum}.txt -1 $read1 -2 $read2 > results/$test/kon/$ds/${rs}.kon ";
+    done;
+    for rsnum in 300 656; do
+        refset=reference_genomes/bwa/multiref_${rsnum}.fasta
+        echo $refset;
+        rs=`basename $refset`;
+        rs=${rs/.fasta/};
+        read1=$dataset/${sid}_1_basic_${nr}_CONTAMINATED_${rs}.fastq;
+        read2=$dataset/${sid}_2_basic_${nr}_CONTAMINATED_${rs}.fastq;
+        read1fa=${read1/fastq/fasta};
+        readfa=${read1fa/_1_/_};
+        # Set up log and output directories
+        for aln in kon bwa blastn; do mkdir -p logs/$test/$aln/$ds; mkdir -p results/$test/$aln/$ds; done;
+        # OK, NOW we can do the alignments.
+        log=logs/$test/kon/$ds/${rs}.slurm;
+        sbatch -c 1 -o $log -e $log -p tgac-medium --mem 64000 --wrap "time kontaminant_n668 -s -n 25 -b 80 -d $refdir -o results/$test/kon/$ds -e reference_genomes/kon/multiref_${rsnum}.txt -1 $read1 -2 $read2 > results/$test/kon/$ds/${rs}.kon ";
+    done;
+done
+
+-c option should have list of contaminants, not just one. THat would explain observed kontaminant results.
+In fact, use the -e option and give it a list of species names.
+Remember to use kontaminant versions that can use more memory! It'll be needed for larger runs. E.g. kontaminant_n156 and kontaminant_668 
+How many OF EACH SPECIES does each method correctly assign? We can tell from looking at species names in fastq/fasta headers. 
+
+
+Do screening of Blastn/BWA results (kontaminant is already done)
+
+test="scaling_test_reference_size";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam; do
+        echo " ";
+        echo $f;
+        bsub -q Prod128 -oo "${f}_screen.log" "perl ~/Scripts/bwa_sam_count_paired.pl $f";
+    done;
+done
+
+test="scaling_test_reference_size";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam; do
+        echo " ";
+        echo $f;
+        perl ~/Scripts/bwa_sam_count_paired.pl $f;
+    done;
+done
+
+test="scaling_test_reference_size";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        bsub -q Prod128 -oo "${f}_screen.log" "perl ~/Scripts/blast_outfmt6_count_paired.pl $f";
+    done;
+done
+
+test="scaling_test_reference_size";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        perl ~/Scripts/blast_outfmt6_count_paired.pl $f;
+    done;
+done
+
+
+Alrighty then, let's actually get those numbers out and written up in excel.
+Get BLAST results by doing a tail -n 1 on the log file.
+
+test="scaling_test_reference_size";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        tail -n 1 ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="scaling_test_reference_size";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        tail -n 1 ${f}_screen.log;
+    done;
+done
+
+Get kon results from the output files directly. Do a grep on them?
+(On paired-end runs, may want to grep for 'Remaining reads with at least 1 unique kner in each')
+test="scaling_test_reference_size";
+for rd in results/$test/kon/arabidopsis; do
+    for f in $rd/*.kon;
+        do echo " ";
+        echo $f;
+        grep 'Reads meeting threshold (all kmers)' $f;
+    done;
+done
+
+Get run times.
+test="scaling_test_reference_size";
+for f in logs/$test/*/arabidopsis/*.lsf; do
+    echo " ";
+    echo $f;
+    awk 'NR==22{print;exit}' $f;
+done
+
+Get Blastn screening times too!
+
+test="scaling_test_reference_size";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="scaling_test_reference_size";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+
+
+
+
+------
+
+Alright, some stuff to wrap us up.
+A multitheaded version of kontaminant now exists. Let's do some multithreaded testing.
+Test 1, 2, 4, 8 and 16 threads.
+These should all get their own results directories etc., I suppose. 
+
+Run kontaminant, alignments etc.
+
+sid="SRR1491254_pe_trimmed";
+test="contaminated_reads_scan";
+for threads in 1 2 4 8 16; do
+    for dataset in data/enadata/arabidopsis; do
+        echo $dataset;
+        ds=`basename $dataset`;
+        for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+            echo $refset;
+            rs=`basename $refset`;
+            rs=${rs/.fasta/};
+            read1=$dataset/${sid}_1_basic_100k_CONTAMINATED_${rs}.fastq;
+            read2=$dataset/${sid}_2_basic_100k_CONTAMINATED_${rs}.fastq;
+            read1fa=${read1/fastq/fasta};
+            readfa=${read1fa/_1_/_};
+            # Set up log and output directories
+            for aln in kon bwa blastn; do mkdir -p logs/$test/mt${threads}${aln}/$ds; mkdir -p results/$test/mt${threads}$aln/$ds; done;
+            # OK, NOW we can do the alignments.
+            log=logs/$test/mt${threads}kon/$ds/${rs}.slurm;
+            echo $log;
+            sbatch -c $threads -p tgac-short -o $log -e $log --mem 8192 --wrap "time kontaminant -N $threads -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > results/$test/mt${threads}kon/$ds/${rs}.kon ";
+            log=logs/$test/mt${threads}bwa/$ds/${rs}.slurm;
+            echo $log;
+            sbatch -c $threads -p tgac-short -o $log -e $log --mem 8192 --wrap "time bwa mem reference_genomes/bwa/${rs}.fasta $read1 $read2 > results/$test/mt${threads}bwa/$ds/${rs}.sam";
+            log=logs/$test/mt${threads}blastn/$ds/${rs}.slurm;
+            echo $log;
+            sbatch -c $threads -p tgac-short -o $log -e $log --mem 8192 --wrap "time blastn -num_threads $threads -db reference_genomes/blastn/${rs}.fasta -query $readfa -out results/$test/mt${threads}blastn/$ds/${rs}.txt -outfmt 6";
+        done;
+    done;
+done
+
+
+Put the times in a big table. It's those that we're interested in here. 
+OK, I need a cunning bit of grepping or whatever to get all these things. 
+
+for file in logs/contaminated_reads_scan/mt*blastn/arabidopsis/Streptomyces_coelicolor_A3_2.slurm; do echo $file; tail -n5 $file; done
+
+There seems to be a weird bug whenever I run kontaminant with more than 1 thread. Seems to crash (or rather, error) when it encounters an N. Weird.
+Richard says he's fixed this in v2.1.2. In 2.1.4, I still get the error - but the analysis actually does to run to completion.
+Turns out Richard only left that in as a debugging measure. 
+Now fixed.
+
+
+Subsample ratio (flag -y) - does it work, and is its relationship to performance linear?
+
+sid="SRR1491254_pe_trimmed";
+test="contaminated_reads_scan";
+for subsample in 0.1 0.2 0.4 0.5 0.6 0.8 1; do
+    for dataset in data/enadata/arabidopsis; do
+        echo $dataset;
+        ds=`basename $dataset`;
+        for refset in reference_genomes/bwa/Streptomyces_coelicolor_A3_2.fasta; do
+            echo $refset;
+            rs=`basename $refset`;
+            rs=${rs/.fasta/};
+            read1=$dataset/${sid}_1_basic_100k_CONTAMINATED_${rs}.fastq;
+            read2=$dataset/${sid}_2_basic_100k_CONTAMINATED_${rs}.fastq;
+            read1fa=${read1/fastq/fasta};
+            readfa=${read1fa/_1_/_};
+            # Set up log and output directories
+            for aln in kon; do mkdir -p logs/$test/subsmpl${subsample}${aln}/$ds; mkdir -p results/$test/subsmpl${subsample}$aln/$ds; done;
+            # OK, NOW we can do the alignments.
+            log=logs/$test/subsmpl${subsample}kon/$ds/${rs}.slurm;
+            echo $log;
+            cmd="time kontaminant -y $subsample -N 1 -s -d reference_genomes/kon -c $rs -1 $read1 -2 $read2 > results/$test/subsmpl${subsample}kon/$ds/${rs}.kon";
+            echo $cmd;
+            sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "$cmd";
+        done;
+    done;
+done
+
+# Print time taken.
+test="contaminated_reads_scan";
+for rd in logs/$test/subsmpl*kon/arabidopsis; do
+    for f in $rd/*.slurm;
+        do echo " ";
+        echo $f;
+        head $f;
+    done;
+done
+
+# Grep for number of matching reads.
+for rd in results/$test/subsmpl*kon/arabidopsis; do
+    for f in $rd/*.kon;
+        do echo " ";
+        echo $f;
+        grep 'Reads meeting threshold (all kmers)' $f;
+    done;
+done
+
+Resuts of this indicated a bug, which Richard subsequently fixed. 
+
+Do screening of Blastn/BWA results (kontaminant is already done)
+
+test="contaminated_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam; do
+        echo " ";
+        echo $f;
+        log="${f}_screen.log";
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "perl ~/Scripts/bwa_sam_count_paired.pl $f";
+    done;
+done
+
+
+test="contaminated_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam; do
+        echo " ";
+        echo $f;
+        perl ~/Scripts/bwa_sam_count_paired.pl $f;
+    done;
+done
+
+
+Better way to screen these is to simply pass the SAM files to samtools flagstat.
+The value to look for here is "n + 0 properly paired (n.nn% : N/A)"
+
+samtools flagstat results/$test/bwa/arabidopsis/Streptomyces_coelicolor_A3_2.sam
+
+Yes, it's ~/Scripts/blast_outfmt6_count.pl
+test="contaminated_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        log="${f}_screen.log";
+        sbatch -c 1 -p tgac-short -o $log -e $log --mem 8192 --wrap "perl ~/Scripts/blast_outfmt6_count_paired.pl $f";
+    done;
+done
+
+test="contaminated_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        perl ~/Scripts/blast_outfmt6_count_paired.pl $f;
+    done;
+done
+
+
+Alrighty then, let's actually get those numbers out and written up in excel.
+Get BLAST results by doing a tail -n 1 on the log file.
+
+test="contaminated_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        cat ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="contaminated_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        cat ${f}_screen.log;
+    done;
+done
+
+Get kon results from the output files directly. Do a grep on them?
+(On paired-end runs, may want to grep for 'Remaining reads with at least 1 unique kmer in each')
+test="contaminated_reads_scan";
+for rd in results/$test/kon/arabidopsis; do
+    for f in $rd/*.kon;
+        do echo " ";
+        echo $f;
+        grep 'Reads meeting threshold (all kmers)' $f;
+    done;
+done
+
+Get run times.
+
+test="contaminated_reads_scan";
+for f in logs/$test/*/arabidopsis/*.lsf; do
+    echo " ";
+    echo $f;
+    awk 'NR==22{print;exit}' $f;
+done
+
+Get Blastn screening times too!
+
+test="contaminated_reads_scan";
+for rd in results/$test/blastn/arabidopsis; do
+    for f in $rd/*.txt;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+Get BWA results the same way!
+
+test="contaminated_reads_scan";
+for rd in results/$test/bwa/arabidopsis; do
+    for f in $rd/*.sam;
+        do echo " ";
+        echo $f;
+        awk 'NR==22{print;exit}' ${f}_screen.log;
+    done;
+done
+
+
+
