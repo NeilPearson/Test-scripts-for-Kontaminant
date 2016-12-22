@@ -26,15 +26,22 @@ Long-read paired-end, short-read paired-end and short-read single-end datasets o
 A short-read single-end dataset showing a large range of variation in read quality was screened. High [x%] and low [y%] levels of contamination were introduced to this dataset. In this test, a degree of random variation [average z% of introduced bases] was introduced into the contaminant sequences to reflect the variable read quality. This test was designed to highlight a potential scenario in which alignment score-based methods such as BWA may be reasonably expected to outperform kmer-based methods like Kontaminant.
 A short-read dataset with variable but predominantly low-quality reads (for an Illumina run) was screened. As with test 4, high [x%] and low [y%] levels of contamination were introduced, with [z%] average variation in the contaminant genome - a species relatively closely related to the target species. This test was intended to represent the most challenging conditions possible for reliable identification of contaminant reads. 
 
+Results of the above analyses are provided, but ultimately we settled on a simpler test procedure:
+Reads for a commonly sequnced species (Arabidopsis) were contaminated with reads synthesised from a very distantly related species (Streptomyces coelicolor A3(2)). 
+A confusion matrix was then produced as before.
+
+
 Performance of Blastn, BWA and Kontaminant - in terms of confusion matrix values and computational resources/time required - was measured for all of the above cases.
 Following that, we used an additional dataset to measure further performance characteristics of Kontaminant:
--hOw does varying the threshold and read threshold settings in Kontaminant affect the results in the confusion matrix when we try to screen for larger numbers of reference genomes at the same time?
+-How does varying the threshold and read threshold settings in Kontaminant affect the results in the confusion matrix when we try to screen for larger numbers of reference genomes at the same time? 
+
 -How well does Kontaminant handle sequencing errors present at certain rates, in comparison to BWA and Blastn?
+
 -How does Kontaminant scale up when given a larger number of reads? (i.e., what is its computational complexity?) How does this compare to Blastn/BWA?
+
 -How well does a multithreaded version of kontaminant perform given a range of computational resources and thread settings?
 
-
-
+Results for all of these tests are given in the results files. Details of their execution are given in the appropriate sections below.
 
 
 First, used remove_short_reads.pl to remove reads shorter than the maximum read length. 
